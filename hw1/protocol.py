@@ -55,8 +55,8 @@ class Header:
 
 
 class MyTCPProtocol(UDPBasedProtocol):
-    timeout_ms = 200
-    segment_size = 100
+    timeout_ms = 2
+    segment_size = 50000
     
     
     def __init__(self, *args, **kwargs):
@@ -64,7 +64,7 @@ class MyTCPProtocol(UDPBasedProtocol):
         self.udp_socket.settimeout(self.timeout_ms / 1000)
         self.next_send_data_id = 0
         self.received_data = Queue()
-        self.data_accepted = Event()
+        self.last_data_accepted = Event()
         #self.performing_socket_operation = Lock()
         
         self.recv_worker_thread = Thread(target = self.receive_worker, daemon = True)
@@ -80,20 +80,26 @@ class MyTCPProtocol(UDPBasedProtocol):
         self.send_split_segments(data, data_id)
         #print(self.__repr__() + " Sent data_id " + str(data_id))
         
-        acception_header = Header(0, 0, 0, False)
-        while (acception_header.ack_flag == False or acception_header.data_id != data_id):
-            received_data = self.recvfrom(Header.header_size)
-            while (len(received_data) != Header.header_size):
-                self.send_split_segments(data, data_id)
-                #print(self.__repr__() + " Resent data_id " + str(data_id))
-                
-                received_data = self.recvfrom(Header.header_size)
-            
-            acception_header.set_from_buf(received_data)
-        
+        while(not self.last_data_accepted.wait(self.timeout_ms / 1000)):
+            self.send_split_segments(data, data_id)
+            #print(self.__repr__() + " Resent data_id " + str(data_id))
+        self.last_data_accepted.clear()
         #print(self.__repr__() + " Received accept data_id " + str(data_id))
-        #self.performing_socket_operation.release()
-        time.sleep(0.01)
+        
+        # acception_header = Header(0, 0, 0, False)
+        # while (acception_header.ack_flag == False or acception_header.data_id != data_id):
+        #     received_data = self.recvfrom(Header.header_size)
+        #     while (len(received_data) != Header.header_size):
+        #         self.send_split_segments(data, data_id)
+        #         #print(self.__repr__() + " Resent data_id " + str(data_id))
+                
+        #         received_data = self.recvfrom(Header.header_size)
+            
+        #     acception_header.set_from_buf(received_data)
+        
+        # #print(self.__repr__() + " Received accept data_id " + str(data_id))
+        # #self.performing_socket_operation.release()
+        # time.sleep(0.01)
         return len(data)
 
  
@@ -120,9 +126,17 @@ class MyTCPProtocol(UDPBasedProtocol):
             cur_sent = last_ind_to_send
     
     
-    def try_recv_merge_segments(self):
-        header = Header(0, 0, 0, True)
-        while (header.ack_flag == True or header.segment_num != 0):
+    def handle_ack_income(self, header: Header):
+        assert header.ack_flag == True
+        #print(self.__repr__() + " Received accept in handler data_id " + str(header.data_id))
+        assert header.data_id == self.next_send_data_id - 1
+        
+        self.last_data_accepted.set()
+    
+    
+    def process_incoming_data(self):
+        header = None
+        while (header == None or header.segment_num != 0):
             segment = bytes()
             #self.performing_socket_operation.acquire()
             while (len(segment) < Header.header_size):
@@ -130,8 +144,13 @@ class MyTCPProtocol(UDPBasedProtocol):
                 #time.sleep(0.00000000001)  # as there is no yield in python and sleep(0) makes nothing >:(
                 #self.performing_socket_operation.acquire()
                 segment = self.recvfrom(self.segment_size)
-                
+            
+            header = Header()
             header.set_from_buf(segment[:Header.header_size])
+        
+        if (header.ack_flag == True):
+            self.handle_ack_income(header)
+            return None, None
         
         data = bytearray(header.data_size)
         data_size = header.data_size
@@ -146,7 +165,7 @@ class MyTCPProtocol(UDPBasedProtocol):
             
             header = Header(0, 0, 0, True)
             while (header.ack_flag == True or header.data_id != data_id):
-                need_to_recv = min(data_size - cur_size, self.segment_size)
+                need_to_recv = min(data_size - cur_size + Header.header_size, self.segment_size)
                 segment = self.recvfrom(need_to_recv)
                 while (len(segment) != need_to_recv):
                     segment = self.recvfrom(need_to_recv)
@@ -168,15 +187,11 @@ class MyTCPProtocol(UDPBasedProtocol):
             data = None
             data_id = 0
             while (data == None):
-                data, data_id = self.try_recv_merge_segments()
-                if (data == None):
-                    print(self.__repr__() + " Received None")
+                data, data_id = self.process_incoming_data()
                     
             
             assert data_id == next_data_id or data_id == next_data_id - 1
-            if (data_id == next_data_id - 1):
-                print("there")
-            #time.sleep(0.00001)
+            
             while (self.sendto(Header(data_id, 0, 0, True).get_buffer()) != Header.header_size):
                 pass
             #print(self.__repr__() + " Accepted data_id " + str(data_id))
