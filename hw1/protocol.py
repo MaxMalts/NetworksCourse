@@ -61,7 +61,7 @@ class MyTCPProtocol(UDPBasedProtocol):
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.udp_socket.settimeout(self.timeout_ms / 1000)
+        #self.udp_socket.settimeout(self.timeout_ms / 1000)
         self.next_send_data_id = 0
         self.received_data = Queue()
         self.last_data_accepted = Event()
@@ -73,7 +73,6 @@ class MyTCPProtocol(UDPBasedProtocol):
 
     def send(self, data: bytes):
         data_id = self.next_send_data_id
-        self.next_send_data_id += 1
         
         #self.performing_socket_operation.acquire()
     
@@ -83,6 +82,8 @@ class MyTCPProtocol(UDPBasedProtocol):
         while(not self.last_data_accepted.wait(self.timeout_ms / 1000)):
             self.send_split_segments(data, data_id)
             #print(self.__repr__() + " Resent data_id " + str(data_id))
+        
+        self.next_send_data_id += 1
         self.last_data_accepted.clear()
         #print(self.__repr__() + " Received accept data_id " + str(data_id))
         
@@ -129,9 +130,11 @@ class MyTCPProtocol(UDPBasedProtocol):
     def handle_ack_income(self, header: Header):
         assert header.ack_flag == True
         #print(self.__repr__() + " Received accept in handler data_id " + str(header.data_id))
-        assert header.data_id == self.next_send_data_id - 1
+        assert header.data_id == self.next_send_data_id or\
+            header.data_id == self.next_send_data_id - 1
         
-        self.last_data_accepted.set()
+        if (header.data_id == self.next_send_data_id):
+            self.last_data_accepted.set()
     
     
     def process_incoming_data(self):
@@ -192,6 +195,7 @@ class MyTCPProtocol(UDPBasedProtocol):
             
             assert data_id == next_data_id or data_id == next_data_id - 1
             
+            #print(self.__repr__() + " Before accepted data_id " + str(data_id))
             while (self.sendto(Header(data_id, 0, 0, True).get_buffer()) != Header.header_size):
                 pass
             #print(self.__repr__() + " Accepted data_id " + str(data_id))
